@@ -7,6 +7,7 @@ import { GameData } from './timelines/game-data';
 import { HttpServer } from './http';
 import { setupWorldServer } from './socket-server/world-server';
 import { setupLoginServer } from './socket-server/login-server';
+import { setupSnowServer } from './socket-server/snow-server';
 
 
 /** Initialize the mods. Returns a list of any that failed to start. */
@@ -28,6 +29,8 @@ export async function startServices() {
   const world = await setupWorldServer(settingsManager, db, gameData);
 
   await (new HttpServer(gameData, settingsManager, db)).setupServer();
+
+  await setupSnowServer(settingsManager, db, gameData);
 
   return world;
 }

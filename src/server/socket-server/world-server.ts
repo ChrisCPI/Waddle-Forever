@@ -129,6 +129,8 @@ export class WorldServer implements MessageHandler {
     const context = this.getContext(client);
     await this._xtHandler.disconnect(context);
   }
+
+  public async connect() {}
 }
 
 export const setupWorldServer = async (settings: SettingsManager, db: PenguinRepository, gameData: GameData): Promise<EffectService<WorldServer>> => {

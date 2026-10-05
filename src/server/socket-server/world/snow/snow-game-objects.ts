@@ -5,6 +5,8 @@ import { choose, chooseN, clamp, randomInt } from "@common/utils";
 import { Card, CardColor, CardElement } from "@server/game-logic/cards";
 import { Stamp } from "@server/game-logic/stamps";
 
+type Tag = [string, ...(string | number)[]];
+
 interface SpriteSettings {
   scaleX?: number
   scaleY?: number
@@ -45,6 +47,7 @@ export class GameObject {
 
   public id: number = -1;
   public onClick: ObjectOnClick = null;
+  private _tags = new Set<Tag>();
 
   constructor(
     public game: SnowGame,
@@ -123,9 +126,30 @@ export class GameObject {
       || this.yScale !== 1;
   }
 
-  public async placeObject() {
-    await this.ctx.msg.send(
-      this.clients,
+  /*public async sendTags(...tags: Tag[]) {
+    await this.ctx.msg.sendMultiple(this.clients, ...tags);
+  }*/
+
+  /**
+   * Sends all of the queued actions (placeObject, animateObject, etc)
+   * in one message to the client, then clears the set.
+   * @param player Optionally, only send to a specific player
+   */
+  public async sendTags(player: SnowPlayer = null) {
+    await this.ctx.msg.sendMultiple(player ?? this.clients, ...Array.from(this._tags));
+    this._tags.clear();
+  }
+
+  /*public async sendTagsToPlayer(player: SnowPlayer, ...tags: Tag[]) {
+    await this.ctx.msg.sendMultiple(player, ...tags);
+  }*/
+
+  /**
+   * @returns An array with an `O_HERE` tag, and possibly followed by
+   * an `O_SPRITESETTINGS` tag if the sprite settings changed
+   */
+  public placeObject() {
+    this._tags.add([
       'O_HERE',
       this.id,
       '0:1',
@@ -137,36 +161,16 @@ export class GameObject {
       0,
       Number(Boolean(this.onClick)),
       0
-    );
+    ]);
 
     if (this.spriteSettingsChanged) {
-      await this.spriteSettings();
+      this.spriteSettings();
     }
   }
 
-  public async moveObject(x: number, y: number, duration: number = 600) {
-    this.x = x;
-    this.y = y;
-
-    if (this.grid) {
-      this.game.grid.move(this, x, y);
-    }
-
-    await this.ctx.msg.send(
-      this.clients,
-      'O_SLIDE',
-      this.id,
-      this.x + this.xOffset,
-      this.y + this.yOffset,
-      128, // Z coordinate
-      duration
-    );
-  }
-
-  public async animateObject(
+  public animateObject(
     name: string,
-    settings: Partial<AnimObjectSettings> = {},
-    target: SnowPlayer | null = null
+    settings: Partial<AnimObjectSettings> = {}
   ) {
     settings = {
       playStyle: 'play_once',
@@ -189,8 +193,7 @@ export class GameObject {
       handleId = this.game.callbacks.registerAction(name, ActionType.Animation, this.id, settings.callback);
     }
 
-    await this.ctx.msg.send(
-      target ?? this.clients,
+    this._tags.add([
       'O_ANIM',
       this.id,
       `0:${asset.index}`,
@@ -200,28 +203,37 @@ export class GameObject {
       Number(!settings.reset),
       this.id,
       handleId
-    );
+    ]);
   }
 
-  public async placeSprite(name: string = this.name, target: SnowPlayer | null = null) {
-    await this.ctx.msg.send(
-      target ?? this.clients,
+  public moveObject(x: number, y: number, duration: number = 600) {
+    this.x = x;
+    this.y = y;
+
+    if (this.grid) {
+      this.game.grid.move(this, x, y);
+    }
+
+    this._tags.add([
+      'O_SLIDE',
+      this.id,
+      this.x + this.xOffset,
+      this.y + this.yOffset,
+      128, // Z coordinate
+      duration
+    ]);
+  }
+
+  public placeSprite(name: string = this.name) {
+    this._tags.add([
       'O_SPRITE',
       this.id,
       `0:${this.ctx.world.assets.getByName(name).index}`,
       0, ''
-    );
+    ]);
   }
 
-  public async loadSprite(name: string) {
-    await this.ctx.msg.send(
-      this.clients,
-      'S_LOADSPRITE',
-      `0:${this.ctx.world.assets.getByName(name).index}`
-    );
-  }
-
-  public async animateSprite(
+  public animateSprite(
     start: number = 0,
     end: number = 0,
     settings: Partial<AnimSpriteSettings> = {}
@@ -233,8 +245,7 @@ export class GameObject {
       ...settings
     }
 
-    await this.ctx.msg.send(
-      this.clients,
+    this._tags.add([
       'O_SPRITEANIM',
       this.id,
       start + 1,
@@ -242,10 +253,10 @@ export class GameObject {
       Number(settings.backwards),
       settings.playStyle,
       settings.duration
-    );
+    ]);
   }
 
-  private async spriteSettings(s: SpriteSettings = {}) {
+  private spriteSettings(s: SpriteSettings = {}) {
     const scaleX = s.scaleX ?? this._xScale;
     const scaleY = s.scaleY ?? this._yScale;
     const originMode = s.originMode ?? this._originMode;
@@ -256,48 +267,54 @@ export class GameObject {
     this._originMode = originMode;
     this._mirrorMode = mirrorMode;
 
-    await this.ctx.msg.send(
-      this.clients,
+    this._tags.add([
       'O_SPRITESETTINGS',
       this.id,
       'none', // sprite layers
       scaleX, scaleY,
       '', '', '',
       originMode, mirrorMode
-    );
+    ]);
   }
 
-  public async resetSpriteSettings() {
-    if (this.spriteSettingsChanged) {
-      await this.spriteSettings({ scaleX: 1, scaleY: 1, originMode: OriginMode.NONE, mirrorMode: MirrorMode.NONE });
-    }
+  /** Resets the sprite settings to the default */
+  public resetSpriteSettings() {
+    this.spriteSettings({ scaleX: 1, scaleY: 1, originMode: OriginMode.NONE, mirrorMode: MirrorMode.NONE });
   }
 
-  public async removeObject() {
+  public removeObject() {
     this.game.grid.remove(this);
     this.game.objects.delete(this);
     this.removePendingActions();
-    await this.ctx.msg.send(this.clients, 'O_GONE', this.id);
+    this.ctx.msg.send(this.clients, 'O_GONE', this.id);
   }
 
-  public async hide(player: SnowPlayer | null = null) {
-    await this.placeSprite('blank_png', player);
-    await this.animateObject('blank_png', {}, player);
+  /** "Hides" a game object by placing a blank sprite */
+  public hide(player: SnowPlayer | null = null) {
+    this.placeSprite('blank_png');
+    this.animateObject('blank_png');
+    this.sendTags(player);
     this.removePendingActions();
+  }
+
+  /** Runs `placeObject` and `placeSprite` together, for convenience */
+  public placeObjectAndSprite(spriteName: string = this.name) {
+    this.placeObject();
+    this.placeSprite(spriteName);
   }
 
   protected removePendingActions(fireAnims: boolean = true) {
     this.game.callbacks.remove(this.id, fireAnims);
   }
 
-  public async playSound(
+  public playSound(
     name: string,
     target: SnowPlayer = null,
     looping: boolean = false,
     volume: number = 100,
     radius: number = 0,
     callback: ActionCallback = null
-  ): Promise<Sound> {
+  ) {
     const sound = Sound.fromName(
       this.ctx.world,
       name,
@@ -307,7 +324,7 @@ export class GameObject {
       this.id,
       this.id
     );
-    await sound.play(this.ctx, target ?? this.game, this.id, callback);
+    sound.play(this.ctx, target ?? this.game, this.id, callback);
     return sound;
   }
 
@@ -331,9 +348,9 @@ export class LocalGameObject extends GameObject {
     super(game, name, x, y, false, xOffset, yOffset, _originMode, _mirrorMode, _xScale, _yScale, client);
   }
 
-  public async removeObject() {
+  public removeObject() {
     this.client.localObjects.delete(this);
-    await this.ctx.msg.send(this.clients, 'O_GONE', this.id);
+    this.ctx.msg.send(this.clients, 'O_GONE', this.id);
     this.removePendingActions();
   }
 
@@ -369,6 +386,7 @@ class Target extends LocalGameObject {
     this.placeObject();
     this.animateObject(this.anims.attackIntro, { reset: true });
     this.animateObject(this.anims.attackIdle, { playStyle: 'loop' });
+    this.sendTags();
     this.playSound(sfxName('uitargetred'), this.client);
     this.game.sendTip(TipPhase.ATTACK, this.client);
   }
@@ -380,6 +398,7 @@ class Target extends LocalGameObject {
     this.placeObject();
     this.animateObject(this.anims.healIntro, { reset: true });
     this.animateObject(this.anims.healIdle, { playStyle: 'loop' });
+    this.sendTags();
     this.playSound(sfxName('uitargetred'), this.client);
     this.game.sendTip(TipPhase.HEAL, this.client);
   }
@@ -395,6 +414,7 @@ class Target extends LocalGameObject {
     this.selected = true;
     this.animateObject(this.type === 'attack' ? this.anims.attackSelectedIntro : this.anims.healSelectedIntro, { reset: true });
     this.animateObject(this.type === 'attack' ? this.anims.attackSelectedIdle : this.anims.healSelectedIdle, { playStyle: 'loop' });
+    this.sendTags();
     this.playSound(sfxName(this.type === 'attack' ? 'uitargetselect' : 'uiselecttile'), this.client);
     
     if ([TipPhase.ATTACK, TipPhase.HEAL].includes(this.client.lastTip)) {
@@ -406,6 +426,7 @@ class Target extends LocalGameObject {
     this.selected = false;
     this.animateObject(this.type === 'attack' ? this.anims.attackIntro : this.anims.healIntro, { reset: true });
     this.animateObject(this.type === 'attack' ? this.anims.attackIdle : this.anims.healIdle, { playStyle: 'loop' });
+    this.sendTags();
   }
 
   public onClick = (ctx: SnowPenguinContext) => {
@@ -458,11 +479,10 @@ export class AttackTile extends Effect {
     super(game, 'ui_tile_attack', x, y, 0.5, 0.9998);
   }
 
-  async play(autoRemove: boolean = false) {
+  play(autoRemove: boolean = false) {
     if (this.game.grid.isValid(this.x, this.y)) {
-      await this.placeObject();
-      await this.placeSprite();
-
+      this.placeObjectAndSprite();
+      this.sendTags();
       if (autoRemove) setTimeout(() => this.removeObject(), 200);
     }
   }
@@ -473,11 +493,10 @@ export class HealTile extends Effect {
     super(game, 'ui_tile_heal', x, y, 0.5, 0.9998);
   }
 
-  async play(autoRemove: boolean = false) {
+  play(autoRemove: boolean = false) {
     if (this.game.grid.isValid(this.x, this.y)) {
-      await this.placeObject();
-      await this.placeSprite();
-
+      this.placeObjectAndSprite();
+      this.sendTags();
       if (autoRemove) setTimeout(() => this.removeObject(), 200);
     }
   }
@@ -488,10 +507,10 @@ export class HealParticles extends Effect {
     super(game, 'ui_healfx_anim', x, y, 0.50005, 1.0005, 0.737);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(0, 10, { duration: this.duration * 1000 });
+  play() {
+    this.placeObjectAndSprite();
+    this.animateSprite(0, 10, { duration: this.duration * 1000 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), this.duration * 1000);
   }
 }
@@ -518,12 +537,12 @@ export class DamageNumbers extends Effect {
     24: [65, 69]
   }
 
-  async play(damage: number = 0) {
+  play(damage: number = 0) {
     const range = this.frames[damage];
     if (!range) return;
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(...range, { duration: this.duration * 1000 });
+    this.placeObjectAndSprite();
+    this.animateSprite(...range, { duration: this.duration * 1000 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), this.duration * 1000);
   }
 }
@@ -542,12 +561,12 @@ export class HealNumbers extends Effect {
     12: [25, 29]
   }
 
-  async play(hp: number = 0) {
+  play(hp: number = 0) {
     const range = this.frames[hp];
     if (!range) return;
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(...range, { duration: this.duration * 1000 });
+    this.placeObjectAndSprite();
+    this.animateSprite(...range, { duration: this.duration * 1000 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), this.duration * 1000);
   }
 }
@@ -557,10 +576,10 @@ export class Explosion extends Effect {
     super(game, 'effect_explosion_anim', x, y, 0.50005, 1.0005, 0.4);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(0, 4, { duration: this.duration * 260 });
+  play() {
+    this.placeObjectAndSprite();
+    this.animateSprite(0, 4, { duration: this.duration * 260 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), this.duration * 1000);
   }
 }
@@ -570,16 +589,16 @@ export class SnowProjectile extends Effect {
     super(game, 'snow_projectile', x, y, 0.5, 1, 0.2);
   }
 
-  async play(tx: number = 0, ty: number = 0) {
+  play(tx: number = 0, ty: number = 0) {
     this.setOffset(tx, ty);
-    await this.placeObject();
-
-    await this.setMirrorMode(tx, ty);
-    await this.placeSprite(this.getAnimName(tx, ty));
-    await this.moveObject(tx, ty, this.duration * 1000);
+    this.placeObject();
+    this.setMirror(tx, ty);
+    this.placeSprite(this.getAnimName(tx, ty));
+    this.moveObject(tx, ty, this.duration * 1000);
+    this.sendTags();
   }
 
-  private async setMirrorMode(tx: number, ty: number) {
+  private setMirror(tx: number, ty: number) {
     const xDiff = tx - this.x;
     const yDiff = ty - this.y;
 
@@ -621,12 +640,13 @@ export class FireProjectile extends Effect {
     super(game, 'fire_projectile', x, y, 0.5, 1);
   }
 
-  async play(tx: number = 0, ty: number = 0) {
-    if ((tx - this.x) < 0) this.xOffset = -1;
-    await this.placeObject();
-    if ((tx - this.x) < 0) this.mirrorMode = MirrorMode.X;
-
-    await this.placeSprite(this.getAnimName(tx, ty));
+  play(tx: number = 0, ty: number = 0) {
+    const shouldFlip = (tx - this.x) < 0;
+    if (shouldFlip) this.xOffset = -1;
+    this.placeObject();
+    if (shouldFlip) this.mirrorMode = MirrorMode.X;
+    this.placeSprite(this.getAnimName(tx, ty));
+    this.sendTags();
   }
 
   private getAnimName(tx: number, ty: number) {
@@ -657,17 +677,16 @@ export class SlyProjectile extends Effect {
     super(game, 'sly_projectile_anim', x, y, 0.5, 1, 0.5);
   }
 
-  async play(tx: number, ty: number) {
+  play(tx: number, ty: number) {
     if (this.x > tx) {
       this.xOffset = 1;
       this.yOffset = 0.8;
     }
-    await this.placeObject();
-    await this.placeSprite();
-  
+    this.moveObject(tx, ty, this.duration * 1000);
     this.xOffset = 0.5;
     this.yOffset = 1;
-    await this.moveObject(tx, ty, this.duration * 1000);
+    this.moveObject(tx, ty, this.duration * 1000);
+    this.sendTags();
   }
 }
 
@@ -676,9 +695,9 @@ export class ScrapImpact extends Effect {
     super(game, 'scrap_attackeffect_anim', x, y, 0.5, 1, 0.4);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
+  play() {
+    this.placeObjectAndSprite();
+    this.sendTags();
     setTimeout(() => this.removeObject(), this.duration * 1000);
   }
 }
@@ -688,9 +707,9 @@ export class ScrapImpactLittle extends Effect {
     super(game, 'scrap_attacklittleeffect_anim', x, y, 0.5, 1, 0.4);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
+  play() {
+    this.placeObjectAndSprite();
+    this.sendTags();
   }
 }
 
@@ -724,24 +743,24 @@ class ScrapProjectile extends Effect {
     super(game, 'scrap_projectile', x, y, 0.25, 1.5);
   }
 
-  async play(tx: number, ty: number, anim: string) {
+  play(tx: number, ty: number, anim: string) {
     if (tx < 0 || ty > 8 || ty < 0 || ty > 4) return;
 
-    await this.placeObject();
-    await this.placeSprite(`scrap_projectile${anim}_anim`);
-    await this.moveObject(tx, ty);
+    this.placeObjectAndSprite(`scrap_projectile${anim}_anim`);
+    this.moveObject(tx, ty);
+    this.sendTags();
   }
 
-  async playEast(tx: number, ty: number) {
-    await this.play(tx, ty, 'east');
+  playEast(tx: number, ty: number) {
+    this.play(tx, ty, 'east');
   }
 
-  async playNorth(tx: number, ty: number) {
-    await this.play(tx, ty, 'north');
+  playNorth(tx: number, ty: number) {
+    this.play(tx, ty, 'north');
   }
 
-  async playNortheast(tx: number, ty: number) {
-    await this.play(tx, ty, 'northeast');
+  playNortheast(tx: number, ty: number) {
+    this.play(tx, ty, 'northeast');
   }
 }
 
@@ -782,10 +801,10 @@ export class TankSwipe extends Effect {
     super(game, `tank_swipe_${dir}_anim`, x, y, 0.5005, 1.005);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(0, 6, { duration: 400 });
+  play() {
+    this.placeObjectAndSprite();
+    this.animateSprite(0, 6, { duration: 400 });
+    this.sendTags();
   }
 }
 
@@ -794,9 +813,9 @@ export class WaterPowerBeam extends Effect {
     super(game, 'waterninja_powercard_water_loop_anim', x, y, 0.5, 1);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
+  play() {
+    this.placeObjectAndSprite();
+    this.sendTags();
   }
 }
 
@@ -805,9 +824,9 @@ export class FirePowerBeam extends Effect {
     super(game, 'fireninja_powerskyfire_anim', x, y, 0.5, 1, 1.35);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
+  play() {
+    this.placeObjectAndSprite();
+    this.sendTags();
   }
 }
 
@@ -816,9 +835,9 @@ export class SnowPowerBeam extends Effect {
     super(game, 'snowninja_beam_anim_', x, y, 0.5, 1.55);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
+  play() {
+    this.placeObjectAndSprite();
+    this.sendTags();
   }
 }
 
@@ -827,11 +846,12 @@ export class SnowIgloo extends Effect {
     super(game, 'snowninja_igloodrop', x, y, 0.5, 2, 2, OriginMode.BOTTOM_MIDDLE);
   }
 
-  async play(playSound: boolean = true) {
-    await this.placeObject();
-    await this.animateObject('snowninja_igloodrop_anim1', { reset: true });
-    await this.animateObject('snowninja_igloodrop_anim2');
-    await this.animateObject('blank_png', { playStyle: 'loop' });
+  play(playSound: boolean = true) {
+    this.placeObject();
+    this.animateObject('snowninja_igloodrop_anim1', { reset: true });
+    this.animateObject('snowninja_igloodrop_anim2');
+    this.animateObject('blank_png', { playStyle: 'loop' });
+    this.sendTags();
 
     if (playSound) {
       setTimeout(() => this.playSound(sfxName('impactpowercardsnow')), 1200);
@@ -844,11 +864,12 @@ export class WaterFishDrop extends Effect {
     super(game, 'waterninja_powercard_fishdrop_anim', x, y, 0.5, 2.4, 1.8, OriginMode.BOTTOM_MIDDLE);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.animateObject(this.name);
-    await this.animateSprite(0, 26, { duration: 1700 });
-    await this.animateObject('blank_png');
+  play() {
+    this.placeObject();
+    this.animateObject(this.name);
+    this.animateSprite(0, 26, { duration: 1700 });
+    this.animateObject('blank_png');
+    this.sendTags();
   }
 }
 
@@ -857,11 +878,12 @@ export class FirePowerBottle extends Effect {
     super(game, 'fireninja_powerbottle_anim', x, y, 0.5, 2, 1, OriginMode.BOTTOM_MIDDLE);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.animateObject(this.name);
-    await this.animateSprite(0, 16, { duration: 1060 });
-    await this.animateObject('blank_png');
+  play() {
+    this.placeObject();
+    this.animateObject(this.name);
+    this.animateSprite(0, 16, { duration: 1060 });
+    this.animateObject('blank_png');
+    this.sendTags();
   }
 }
 
@@ -872,9 +894,9 @@ export class Flame extends Effect {
     super(game, 'effect_resisualfiredamage_anim', x, y, 0.5, 1.0025);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
+  play() {
+    this.placeObjectAndSprite();
+    this.sendTags();
   }
 }
 
@@ -883,15 +905,15 @@ export class Shield extends Effect {
     super(game, 'effect_shield', x, y, 0.5, 1.0015);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite('effect_shield_loop');
+  play() {
+    this.placeObjectAndSprite('effect_shield_loop');
+    this.sendTags();
   }
 
-  async pop() {
-    await this.placeObject();
-    await this.placeSprite('effect_shieldpop_anim');
-    await this.animateSprite(0, 3, { duration: 200 });
+  pop() {
+    this.placeObjectAndSprite('effect_shieldpop_anim');
+    this.animateSprite(0, 3, { duration: 200 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), 200);
   }
 }
@@ -901,15 +923,16 @@ export class Rage extends Effect {
     super(game, 'effect_rage', x, y, 0.5, 1.0025);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite('effect_rageloop_anim');
+  play() {
+    this.placeObjectAndSprite('effect_rageloop_anim');
+    this.sendTags();
   }
 
-  async use(x: number, y: number) {
-    await this.moveObject(x, y, 100);
-    await this.placeSprite('effect_ragehit_anim');
-    await this.animateSprite(0, 11, { duration: 750 });
+  use(x: number, y: number) {
+    this.moveObject(x, y, 100);
+    this.placeSprite('effect_ragehit_anim');
+    this.animateSprite(0, 11, { duration: 750 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), 700);
   }
 }
@@ -919,10 +942,10 @@ export class MemberReviveBeam extends Effect {
     super(game, 'revivebeam_anim', x, y, 0.5, 1, 0, OriginMode.BOTTOM_MIDDLE);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(0, 29, { duration: 1200 });
+  play() {
+    this.placeObjectAndSprite();
+    this.animateSprite(0, 29, { duration: 1200 });
+    this.sendTags();
   }
 }
 
@@ -931,10 +954,10 @@ class TuskPushRock extends Effect {
     super(game, 'effect_tusk_push', x, y, 0.5, 1, 0.75);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(0, 14, { duration: this.duration * 1000 });
+  play() {
+    this.placeObjectAndSprite();
+    this.animateSprite(0, 14, { duration: this.duration * 1000 });
+    this.sendTags();
     setTimeout(() => this.removeObject(), this.duration * 1000);
   }
 }
@@ -944,10 +967,10 @@ class TuskIcicle extends Effect {
     super(game, 'tusk_icicle_drop_anim', x, y, 0.5, 1);
   }
 
-  async play() {
-    await this.placeObject();
-    await this.placeSprite();
-    await this.animateSprite(0, 15, { duration: 800 });
+  play() {
+    this.placeObjectAndSprite();
+    this.animateSprite(0, 15, { duration: this.duration * 800 });
+    this.sendTags();
     setTimeout(() => this.applyDamage(), 800);
   }
 
@@ -1043,21 +1066,25 @@ export abstract class Ninja extends GameObject {
     return this.hp <= 0;
   }
 
-  public async removeObject() {
+  public removeObject() {
     this.healthBar.removeObject();
     this.ghost.removeObject();
-    await super.removeObject();
+    super.removeObject();
   }
 
-  public async moveObject(x: number, y: number, duration: number = this.moveDuration) {
-    this.healthBar.moveObject(x, y, duration);
-    super.moveObject(x, y, duration);
-
+  public moveObject(x: number, y: number, duration: number = this.moveDuration) {
     this.ghost.x = x;
     this.ghost.y = y;
 
-    if (this.shield !== null) this.shield.moveObject(x, y, duration);
-    if (this.rage !== null) this.rage.moveObject(x, y, duration);
+    this.healthBar.moveObject(x, y, duration);
+    super.moveObject(x, y, duration);
+    this.shield?.moveObject(x, y, duration);
+    this.rage?.moveObject(x, y, duration);
+
+    this.sendTags();
+    this.healthBar.sendTags();
+    this.shield?.sendTags();
+    this.rage?.sendTags();
   }
 
   public moveNinja(x: number, y: number) {
@@ -1078,20 +1105,23 @@ export abstract class Ninja extends GameObject {
     for (const ninja of this.game.ninjas) {
       if (ninja.selectedObject === this) {
         ninja.selectedTarget.moveObject(x, y);
+        ninja.selectedTarget.sendTags();
       }
     }
 
     this.moveAnimation();
+
     this.moveObject(x, y);
-    this.moveSound();
+
+    this.moveSound()
 
     this.ghost.x = this.ghost.y = -1;
   }
 
   public placeHealthbar() {
-    this.healthBar.placeObject();
-    this.healthBar.placeSprite();
-    this.resetHealthbar();
+    this.healthBar.placeObjectAndSprite();
+    this.healthBar.animateSprite();
+    this.healthBar.sendTags();
   }
 
   public animateHealthbar(_startHp: number, _endHp: number, duration = 500) {
@@ -1104,10 +1134,15 @@ export abstract class Ninja extends GameObject {
     const end = 60 - Math.floor((endHp / this.maxHp) * 60) - 1;
 
     this.healthBar.animateSprite(start, end, { backwards, duration });
+    this.healthBar.sendTags();
   }
 
-  public resetHealthbar() {
-    this.healthBar.animateSprite();
+  public placeConfirm() {
+    // snowflake had this named 'ui_confirm', but that doesnt seem to exist?
+    const confirm = new GameObject(this.game, 'confirm', this.x, this.y, false, 0.5, 1.05);
+    confirm.placeObjectAndSprite();
+    confirm.sendTags();
+    confirm.playSound('SFX_MG_2013_CJSnow_UIPlayerReady_VBR8');
   }
 
   public setHealth(hp: number, showEffects: boolean = true) {
@@ -1184,7 +1219,7 @@ export abstract class Ninja extends GameObject {
     this.showTargets();
   }
 
-  public async placeGhost(ctx: SnowPenguinContext, x: number, y: number) {
+  public placeGhost(ctx: SnowPenguinContext, x: number, y: number) {
     if (ctx.player.isReady || !ctx.game.timer.running) {
       return;
     }
@@ -1205,13 +1240,13 @@ export abstract class Ninja extends GameObject {
     }
 
     this.game.grid.move(this.ghost, x, y);
-    await this.ghost.placeObject();
-    await this.ghost.placeSprite();
-    await this.ghost.playSound(sfxName('uiselecttile'));
+    this.ghost.placeObjectAndSprite();
+    this.ghost.sendTags();
+    this.ghost.playSound(sfxName('uiselecttile'));
     this.showTargets();
   }
 
-  public async hideGhost(reset: boolean = true) {
+  public hideGhost(reset: boolean = true) {
     this.game.grid.remove(this.ghost);
     this.ghost.hide();
 
@@ -1221,7 +1256,7 @@ export abstract class Ninja extends GameObject {
     }
   }
 
-  public async showTargets() {
+  public showTargets() {
     this.removeTargets();
 
     const healable = this.healableTiles(
@@ -1259,7 +1294,10 @@ export abstract class Ninja extends GameObject {
   }
 
   public removeTargets() {
-    this.targets.forEach(t => t.removeObject());
+    this.targets.forEach(t => {
+      t.removeObject();
+      t.sendTags();
+    });
     this.targets.clear();
   }
 
@@ -1399,27 +1437,27 @@ export abstract class Ninja extends GameObject {
     }
   }
 
-  public abstract idleAnimation(): Promise<void>;
-  public abstract moveAnimation(): Promise<void>;
-  public abstract koAnimation(): Promise<void>;
+  public abstract idleAnimation(): void;
+  public abstract moveAnimation(): void;
+  public abstract koAnimation(): void;
   public abstract attackAnimation(...rest: unknown[]): Promise<void>;
-  public abstract winAnimation(): Promise<void>;
-  public abstract hitAnimation(): Promise<void>;
-  public abstract healAnimation(): Promise<void>;
-  public abstract reviveAnimation(): Promise<void>;
-  public abstract reviveOtherAnimation(): Promise<void>;
-  public abstract reviveOtherAnimationLoop(): Promise<void>;
-  public abstract reviveMemberCardAnimation(): Promise<void>;
+  public abstract winAnimation(): void;
+  public abstract hitAnimation(): void;
+  public abstract healAnimation(): void;
+  public abstract reviveAnimation(): void;
+  public abstract reviveOtherAnimation(): void;
+  public abstract reviveOtherAnimationLoop(): void;
+  public abstract reviveMemberCardAnimation(): void;
   public abstract powerAnimation(): Promise<void>;
 
-  public async koSound() {
-    await this.playSound(sfxName('penguinground'));
+  public koSound() {
+    this.playSound(sfxName('penguinground'));
   }
-  public async moveSound() {
-    await this.playSound(sfxName('footsteppenguin'));
+  public moveSound() {
+    this.playSound(sfxName('footsteppenguin'));
   }
-  public abstract attackSound(): Promise<void>;
-  public abstract powercardSound(): Promise<void>;
+  public abstract attackSound(): void;
+  public abstract powercardSound(): void;
 }
 
 export class FireNinja extends Ninja {
@@ -1428,96 +1466,105 @@ export class FireNinja extends Ninja {
     super(game, 'Fire', player, x, y, 30, 2, 8, 2);
   }
 
-  async idleAnimation() {
-    await this.animateObject('fireninja_idle_anim', { playStyle: 'loop', register: false });
+  idleAnimation() {
+    this.animateObject('fireninja_idle_anim', { playStyle: 'loop', register: false });
   }
 
-  async moveAnimation() {
-    await this.animateObject('fireninja_move_anim', { reset: true });
-    await this.idleAnimation();
+  moveAnimation() {
+    this.animateObject('fireninja_move_anim', { reset: true });
+    this.idleAnimation();
   }
 
-  async koAnimation() {
-    await this.animateObject('fireninja_kostart_anim', { reset: true });
-    await this.animateObject('fireninja_koloop_anim', { playStyle: 'loop' });
+  koAnimation() {
+    this.animateObject('fireninja_kostart_anim', { reset: true });
+    this.animateObject('fireninja_koloop_anim', { playStyle: 'loop' });
+    this.sendTags();
   }
 
-  async hitAnimation() {
-    await this.animateObject('fireninja_hit_anim', { reset: true });
+  hitAnimation() {
+    this.animateObject('fireninja_hit_anim', { reset: true });
 
     if (this.isReviving) {
-      await this.reviveOtherAnimationLoop();
+      this.reviveOtherAnimationLoop();
     } else {
-      await this.idleAnimation();
+      this.idleAnimation();
     }
+
+    this.sendTags();
   }
 
   async attackAnimation(x: number, y: number) {
     if (this.x > x) this.mirrorMode = MirrorMode.X;
 
     this.attackSound();
-    await this.animateObject('fireninja_attack_anim', { reset: true, callback: () => this.resetSpriteSettings() });
+    this.animateObject('fireninja_attack_anim', { reset: true, callback: () => this.resetSpriteSettings() });
     this.idleAnimation();
+    this.sendTags();
 
     await sleep(1450);
-    await this.projectileAnimation(x, y);
+    this.projectileAnimation(x, y);
   }
 
-  private async projectileAnimation(x: number, y: number) {
+  private projectileAnimation(x: number, y: number) {
     const pro = new FireProjectile(this.game, this.x, this.y);
-    await pro.play(x, y);
+    pro.play(x, y);
     setTimeout(() => pro.removeObject(), 250);
   }
 
-  async winAnimation() {
-    await this.animateObject('fireninja_celebratestart_anim', { reset: true });
-    await this.animateObject('fireninja_celebrateloop_anim', { playStyle: 'loop' });
+  winAnimation() {
+    this.animateObject('fireninja_celebratestart_anim', { reset: true });
+    this.animateObject('fireninja_celebrateloop_anim', { playStyle: 'loop' });
   }
 
-  async reviveAnimation() {
+  reviveAnimation() {
     this.animateObject('fireninja_revived_anim', { reset: true });
     new HealParticles(this.game, this.x, this.y).play();
 
     if (this.isReviving) {
-      await this.reviveOtherAnimationLoop();
+      this.reviveOtherAnimationLoop();
     } else {
-      await this.idleAnimation();
+      this.idleAnimation();
     }
+
+    this.sendTags();
   }
 
-  async reviveOtherAnimation() {
-    await this.animateObject('fireninja_reviveother_anim', { reset: true });
-    await this.reviveOtherAnimationLoop();
+  reviveOtherAnimation() {
+    this.animateObject('fireninja_reviveother_anim', { reset: true });
+    this.reviveOtherAnimationLoop();
+    this.sendTags();
   }
 
   async reviveOtherAnimationLoop() {
-    await this.animateObject('fireninja_reviveotherloop_anim', { playStyle: 'loop' });
+    this.animateObject('fireninja_reviveotherloop_anim', { playStyle: 'loop' });
   }
 
   async reviveMemberCardAnimation() {
-    await this.animateObject('fireninja_member_revive', { reset: true });
-    await this.idleAnimation();
+    this.animateObject('fireninja_member_revive', { reset: true });
+    this.idleAnimation();
+    this.sendTags();
   }
 
   async powerAnimation() {
-    await this.animateObject('fireninja_power_anim', { reset: true });
-    await this.idleAnimation();
-    await this.powercardSound();
+    this.animateObject('fireninja_power_anim', { reset: true });
+    this.idleAnimation();
+    this.powercardSound();
+    this.sendTags();
     await sleep(1000);
   }
 
-  async healAnimation() {}
+  healAnimation() {}
 
-  async moveSound() {
-    await this.playSound(sfxName('footsteppenguinfire'));
+  moveSound() {
+    this.playSound(sfxName('footsteppenguinfire'));
   }
 
-  async attackSound() {
-    await this.playSound(sfxName('attackfire'));
+  attackSound() {
+    this.playSound(sfxName('attackfire'));
   }
 
-  async powercardSound() {
-    await this.playSound(sfxName('attackpowercardfire'));
+  powercardSound() {
+    this.playSound(sfxName('attackpowercardfire'));
   }
 
 }
@@ -1528,84 +1575,92 @@ export class WaterNinja extends Ninja {
     super(game, 'Water', player, x, y, 40, 1, 10, 2);
   }
 
-  async idleAnimation() {
-    await this.animateObject('waterninja_idle_anim', { playStyle: 'loop', register: false });
+  idleAnimation() {
+    this.animateObject('waterninja_idle_anim', { playStyle: 'loop', register: false });
   }
 
-  async moveAnimation() {
-    await this.animateObject('waterninja_move_anim', { reset: true });
-    await this.idleAnimation();
+  moveAnimation() {
+    this.animateObject('waterninja_move_anim', { reset: true });
+    this.idleAnimation();
   }
 
-  async koAnimation() {
-    await this.animateObject('waterninja_knockout_intro_anim', { reset: true });
-    await this.animateObject('waterninja_knockout_loop_anim', { playStyle: 'loop' });
+  koAnimation() {
+    this.animateObject('waterninja_knockout_intro_anim', { reset: true });
+    this.animateObject('waterninja_knockout_loop_anim', { playStyle: 'loop' });
   }
 
-  async hitAnimation() {
-    await this.animateObject('waterninja_hit_anim', { reset: true });
+  hitAnimation() {
+    this.animateObject('waterninja_hit_anim', { reset: true });
 
     if (this.isReviving) {
-      await this.reviveOtherAnimationLoop();
+      this.reviveOtherAnimationLoop();
     } else {
-      await this.idleAnimation();
+      this.idleAnimation();
     }
+
+    this.sendTags();
   }
 
   async attackAnimation(x: number, y: number) {
     if (this.x > x) this.mirrorMode = MirrorMode.X;
 
-    await this.animateObject('waterninja_attack_anim', { reset: true, callback: () => this.resetSpriteSettings() });
+    this.animateObject('waterninja_attack_anim', { reset: true, callback: () => this.resetSpriteSettings() });
     this.idleAnimation();
+    this.sendTags();
 
     await sleep(450);
     this.attackSound();
   }
 
-  async winAnimation() {
-    await this.animateObject('waterninja_celebrate_anim', { playStyle: 'ping_pong', reset: true });
+  winAnimation() {
+    this.animateObject('waterninja_celebrate_anim', { playStyle: 'ping_pong', reset: true });
   }
 
-  async reviveAnimation() {
+  reviveAnimation() {
     this.animateObject('waterninja_revived_anim', { reset: true });
     new HealParticles(this.game, this.x, this.y).play();
 
     if (this.isReviving) {
-      await this.reviveOtherAnimationLoop();
+      this.reviveOtherAnimationLoop();
     } else {
-      await this.idleAnimation();
+      this.idleAnimation();
     }
+
+    this.sendTags();
   }
 
-  async reviveOtherAnimation() {
-    await this.animateObject('waterninja_revive_other_intro_anim', { reset: true });
-    await this.reviveOtherAnimationLoop();
+  reviveOtherAnimation() {
+    this.animateObject('waterninja_revive_other_intro_anim', { reset: true });
+    this.reviveOtherAnimationLoop();
+    this.sendTags();
   }
 
-  async reviveOtherAnimationLoop() {
-    await this.animateObject('waterninja_revive_other_loop_anim', { playStyle: 'loop' });
+  reviveOtherAnimationLoop() {
+    this.animateObject('waterninja_revive_other_loop_anim', { playStyle: 'loop' });
   }
 
-  async reviveMemberCardAnimation() {
-    await this.animateObject('waterninja_member_revive', { reset: true });
-    await this.idleAnimation();
+  reviveMemberCardAnimation() {
+    this.animateObject('waterninja_member_revive', { reset: true });
+    this.idleAnimation();
+    this.sendTags();
   }
 
   async powerAnimation() {
-    await this.animateObject('waterninja_powercard_summon_anim', { reset: true });
-    await this.idleAnimation();
-    await this.powercardSound();
+    this.animateObject('waterninja_powercard_summon_anim', { reset: true });
+    this.idleAnimation();
+    this.powercardSound();
+    this.sendTags();
     await sleep(650);
   }
 
-  async healAnimation() {}
+  healAnimation() {}
 
-  async attackSound() {
-    await this.playSound(sfxName('attackwater'));
+  attackSound() {
+    this.playSound(sfxName('attackwater'));
   }
 
-  async powercardSound() {
-    await this.playSound(sfxName('attackpowercardwater'));
+  powercardSound() {
+    this.playSound(sfxName('attackpowercardwater'));
   }
 
 }
@@ -1616,36 +1671,39 @@ export class SnowNinja extends Ninja {
     super(game, 'Snow', player, x, y, 25, 3, 6, 3);
   }
 
-  async idleAnimation() {
-    await this.animateObject('snowninja_idle_anim', { playStyle: 'loop', register: false });
+  idleAnimation() {
+    this.animateObject('snowninja_idle_anim', { playStyle: 'loop', register: false });
   }
 
-  async moveAnimation() {
-    await this.animateObject('snowninja_move_anim', { reset: true });
-    await this.idleAnimation();
+  moveAnimation() {
+    this.animateObject('snowninja_move_anim', { reset: true });
+    this.idleAnimation();
   }
 
-  async koAnimation() {
-    await this.animateObject('snowninja_kointro_anim', { reset: true });
-    await this.animateObject('snowninja_koloop_anim', { playStyle: 'loop' });
+  koAnimation() {
+    this.animateObject('snowninja_kointro_anim', { reset: true });
+    this.animateObject('snowninja_koloop_anim', { playStyle: 'loop' });
   }
 
-  async hitAnimation() {
-    await this.animateObject('snowninja_hit_anim', { reset: true });
+  hitAnimation() {
+    this.animateObject('snowninja_hit_anim', { reset: true });
 
     if (this.isReviving) {
-      await this.reviveOtherAnimationLoop();
+      this.reviveOtherAnimationLoop();
     } else {
-      await this.idleAnimation();
+      this.idleAnimation();
     }
+
+    this.sendTags();
   }
 
   async attackAnimation(x: number, y: number) {
     if (this.x > x) this.mirrorMode = MirrorMode.X;
 
     this.attackSound();
-    await this.animateObject('snowninja_attack_anim', { reset: true, callback: () => this.resetSpriteSettings() });
+    this.animateObject('snowninja_attack_anim', { reset: true, callback: () => this.resetSpriteSettings() });
     this.idleAnimation();
+    this.sendTags();
 
     await sleep(300);
     await this.projectileAnimation(x, y);
@@ -1654,63 +1712,69 @@ export class SnowNinja extends Ninja {
   private async projectileAnimation(x: number, y: number) {
     // this is jank according to snowflake, and yeah it kinda is
     let pro = new SnowProjectile(this.game, this.x, this.y);
-    await pro.play(x, y);
+    pro.play(x, y);
     await sleep(200);
     pro.removeObject();
 
     pro = new SnowProjectile(this.game, this.x, this.y);
-    await pro.play(x, y);
+    pro.play(x, y);
     await sleep(200);
     setTimeout(() => pro.removeObject(), 200);
   }
 
-  async winAnimation() {
-    await this.animateObject('snowninja_celebrate_anim', { playStyle: 'ping_pong', reset: true });
+  winAnimation() {
+    this.animateObject('snowninja_celebrate_anim', { playStyle: 'ping_pong', reset: true });
   }
 
-  async reviveAnimation() {
+  reviveAnimation() {
     this.animateObject('snowninja_revive_anim_', { reset: true });
     new HealParticles(this.game, this.x, this.y).play();
 
     if (this.isReviving) {
-      await this.reviveOtherAnimationLoop();
+      this.reviveOtherAnimationLoop();
     } else {
-      await this.idleAnimation();
+      this.idleAnimation();
     }
+
+    this.sendTags();
   }
 
-  async reviveOtherAnimation() {
-    await this.animateObject('snowninja_reviveothersintro_anim', { reset: true });
-    await this.reviveOtherAnimationLoop();
+  reviveOtherAnimation() {
+    this.animateObject('snowninja_reviveothersintro_anim', { reset: true });
+    this.reviveOtherAnimationLoop();
+    this.sendTags();
   }
 
-  async reviveOtherAnimationLoop() {
-    await this.animateObject('snowninja_reviveothersloop_anim', { playStyle: 'loop' });
+  reviveOtherAnimationLoop() {
+    this.animateObject('snowninja_reviveothersloop_anim', { playStyle: 'loop' });
   }
 
-  async reviveMemberCardAnimation() {
-    await this.animateObject('snowninja_member_revive', { reset: true });
-    await this.idleAnimation();
+  reviveMemberCardAnimation() {
+    this.animateObject('snowninja_member_revive', { reset: true });
+    this.idleAnimation();
+    this.sendTags();
   }
 
   async powerAnimation() {
-    await this.animateObject('snowninja_powercard_anim', { reset: true });
-    await this.idleAnimation();
-    await this.powercardSound();
+    this.animateObject('snowninja_powercard_anim', { reset: true });
+    this.idleAnimation();
+    this.powercardSound();
+    this.sendTags();
     await sleep(450);
   }
 
-  async healAnimation() {
-    await this.animateObject('snowninja_heal_anim', { reset: true });
-    await this.idleAnimation();
+  healAnimation() {
+    this.animateObject('snowninja_heal_anim', { reset: true });
+    this.idleAnimation();
+    this.sendTags();
   }
 
-  async attackSound() {
-    await this.playSound(sfxName('attacksnow'));
+  attackSound() {
+    this.playSound(sfxName('attacksnow'));
   }
 
-  async powercardSound() {
-    await this.playSound(sfxName('attackpowercardsnow'));
+  powercardSound() {
+    this.playSound(sfxName('attackpowercardsnow'));
   }
 
 }
@@ -1791,8 +1855,10 @@ export class Sensei extends GameObject {
 
     await sleep((impacts[0][1].duration * 1000) - delay);
 
-    await beam.removeObject();
+    beam.removeObject();
+
     this.idleAnimation();
+    this.sendTags();
 
     const isCombo = this.game.ninjas.filter(n => n.player.placedPowerCard).length > 0;
 
@@ -1826,39 +1892,44 @@ export class Sensei extends GameObject {
     return [card, impact];
   }
 
-  async idleAnimation() {
-    await this.animateObject('sensei_idle_anim', { playStyle: 'loop', register: false });
+  idleAnimation() {
+    this.animateObject('sensei_idle_anim', { playStyle: 'loop', register: false });
+    this.sendTags();
   }
 
-  async winAnimation() {
-    await this.animateObject('sensei_win_anim', { reset: true });
+  winAnimation() {
+    this.animateObject('sensei_win_anim', { reset: true });
+    this.sendTags();
   }
 
-  async loseAnimation() {
-    await this.animateObject('sensei_lose_anim', { reset: true });
+  loseAnimation() {
+    this.animateObject('sensei_lose_anim', { reset: true });
+    this.sendTags();
   }
 
-  async attackAnimation() {
-    await this.animateObject('sensei_attackstart_anim', { reset: true, duration: 500 });
-    await this.animateObject('sensei_attackloop_anim', { playStyle: 'loop' });
+  attackAnimation() {
+    this.animateObject('sensei_attackstart_anim', { reset: true, duration: 500 });
+    this.animateObject('sensei_attackloop_anim', { playStyle: 'loop' });
+    this.sendTags();
   }
 
-  async powerUpAnimation() {
-    await this.animateObject(`sensei_powerup${this.elementState}_anim`, { reset: true });
-    await this.animateObject(`sensei_powerup${this.elementState}loop_anim`, { playStyle: 'loop' });
-    await this.animateSprite(0, 5, { playStyle: 'loop', duration: 600 });
+  powerUpAnimation() {
+    this.animateObject(`sensei_powerup${this.elementState}_anim`, { reset: true });
+    this.animateObject(`sensei_powerup${this.elementState}loop_anim`, { playStyle: 'loop' });
+    this.animateSprite(0, 5, { playStyle: 'loop', duration: 600 });
+    this.sendTags();
   }
 
-  async attackSound() {
-    await this.playSound(sfxName(`attacksensei${this.elementState}`));
+  attackSound() {
+    this.playSound(sfxName(`attacksensei${this.elementState}`));
   }
 
-  async hitSound() {
-    await this.playSound(sfxName('hitsensei'));
+  hitSound() {
+    this.playSound(sfxName('hitsensei'));
   }
 
-  private async snowImpactSound() {
-    await this.playSound(sfxName('impactsenseisnow'));
+  private snowImpactSound() {
+    this.playSound(sfxName('impactsenseisnow'));
   }
 }
 
@@ -1901,28 +1972,32 @@ export abstract class Enemy extends GameObject {
     );
   }
 
-  async removeObject() {
-    await this.healthBar.removeObject();
-    await super.removeObject();
-    if (this.flame !== null) await this.flame.removeObject();
+  removeObject() {
+    this.healthBar.removeObject();
+    super.removeObject();
+    this.flame?.removeObject();
   }
 
-  async moveObject(x: number, y: number) {
-    await this.healthBar.moveObject(x, y, this.moveDuration);
-    await super.moveObject(x, y, this.moveDuration);
-    if (this.flame !== null) await this.flame.moveObject(x, y, this.moveDuration);
+  moveObject(x: number, y: number) {
+    this.healthBar.moveObject(x, y, this.moveDuration);
+    super.moveObject(x, y, this.moveDuration);
+    this.flame?.moveObject(x, y, this.moveDuration);
+
+    this.healthBar.sendTags();
+    this.sendTags();
+    this.flame?.sendTags();
   }
 
-  async moveEnemy(x: number, y: number) {
+  moveEnemy(x: number, y: number) {
     if (this.hp <= 0) return;
 
     if (this.x === x && this.y === y) return;
 
     if (this.x < x) this.mirrorMode = MirrorMode.X;
 
-    await this.moveAnimation();
-    await this.moveObject(x, y);
-    await this.moveSound();
+    this.moveAnimation();
+    this.moveObject(x, y);
+    this.moveSound();
   }
 
   public placeHealthbar() {
@@ -1930,7 +2005,8 @@ export abstract class Enemy extends GameObject {
     this.healthBar.y = this.y;
     this.healthBar.placeObject();
     this.healthBar.placeSprite();
-    this.resetHealthbar();
+    this.healthBar.animateSprite();
+    this.healthBar.sendTags();
   }
 
   public animateHealthbar(_startHp: number, _endHp: number, duration = 500, maxFrame = 60) {
@@ -1943,10 +2019,7 @@ export abstract class Enemy extends GameObject {
     const end = maxFrame - Math.floor((endHp / this.maxHp) * maxFrame) - 1;
 
     this.healthBar.animateSprite(start, end, { backwards, duration });
-  }
-
-  public resetHealthbar() {
-    this.healthBar.animateSprite();
+    this.healthBar.sendTags();
   }
 
   public async setHealth(hp: number, wait: boolean = true, shouldDie: boolean = true) {
@@ -2124,18 +2197,18 @@ export abstract class Enemy extends GameObject {
   public abstract dazeAnimation(reset: boolean): Promise<void>;
   public abstract hitAnimation(): Promise<void>;
 
-  async spawnAnimation() {
-    await this.animateObject('snowman_spawn_anim', { reset: true });
+  spawnAnimation() {
+    this.animateObject('snowman_spawn_anim', { reset: true });
     this.playSound(sfxName('snowmenappear'));
   }
 
-  async koSound() {
-    await this.playSound(sfxName('snowmandeathexplode'));
+  koSound() {
+    this.playSound(sfxName('snowmandeathexplode'));
   }
-  public abstract moveSound(): Promise<void>;
-  public abstract attackSound(): Promise<void>;
-  public abstract hitSound(): Promise<void>;
-  public abstract impactSound(): Promise<void>;
+  public abstract moveSound(): void;
+  public abstract attackSound(): void;
+  public abstract hitSound(): void;
+  public abstract impactSound(): void;
 
 }
 
@@ -2873,7 +2946,7 @@ export class CardObject implements Card {
 
     await sleep(1200);
 
-    await this.attackAnimation();
+    this.attackAnimation();
     this.applyHealth();
 
     if (isCombo) this.applyEffects();
@@ -2929,17 +3002,17 @@ export class CardObject implements Card {
 
     if (this.element === 'f') {
       await sleep(impact.duration * 1000);
-      await impact.removeObject();
+      impact.removeObject();
       await sleep((beam.duration - impact.duration) * 100);
-      await beam.removeObject();
+      beam.removeObject();
       return;
     }
 
     const delay = 850;
     await sleep((impact.duration * 1000) - delay);
-    await beam.removeObject();
+    beam.removeObject();
     await sleep(delay);
-    await impact.removeObject();
+    impact.removeObject();
   }
 
   async applyHealth() {
@@ -3118,7 +3191,7 @@ export class Sound implements Asset {
     return new Sound(asset.index, asset.name, looping, volume, radius, gameObjectId, resObjectId);
   }
 
-  public async play(ctx: SnowContext, target: SnowGame | SnowPlayer, objectId: number = -1, callback: ActionCallback = null) {
+  public play(ctx: SnowContext, target: SnowGame | SnowPlayer, objectId: number = -1, callback: ActionCallback = null) {
     let handleId = -1;
 
     if (target instanceof SnowGame) {
@@ -3127,7 +3200,7 @@ export class Sound implements Asset {
 
     const targets = (target instanceof SnowPlayer) ? [target] : [...target.players];
 
-    await ctx.msg.send(
+    ctx.msg.send(
       targets.filter(p => !p.muteSounds),
       'FX_PLAYSOUND',
       `0:${this.index}`,

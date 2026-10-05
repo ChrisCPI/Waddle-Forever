@@ -365,6 +365,7 @@ class Grid {
   public showTiles(penguin: SnowPlayer | null = null) {
     const frame = this.game.objects.getByName('ui_tile_frame');
     frame.placeSprite();
+    frame.sendTags();
 
     for (const player of (penguin ? [penguin] : this.game.players)) {
       if (player.ninja.isKO) continue;
@@ -384,7 +385,7 @@ class Grid {
 
         if (enemyRange) {
           // Tile is within the extended tile range, can't move there
-          tile.placeSprite('ui_tile_no_move', player);
+          tile.placeSprite('ui_tile_no_move');
         } else if (!this.canMove(tile.x, tile.y)) {
           // Cannot move to the tile
           let tileName = 'ui_tile_no_move';
@@ -404,10 +405,11 @@ class Grid {
             tileName = 'ui_tile_move';
           }
 
-          tile.placeSprite(tileName, player);
+          tile.placeSprite(tileName);
         } else {
-          tile.placeSprite('ui_tile_move', player);
+          tile.placeSprite('ui_tile_move');
         }
+        tile.sendTags(player);
       }
     }
   }
@@ -421,7 +423,14 @@ class Grid {
 
   public showAttackTiles(player: SnowPlayer) {
     const tiles = player.ninja.ghostTilesInRange(player.ninja.range);
-    this.tiles.forEach(t => tiles.includes(t) ? t.placeSprite('ui_tile_attack', player) : t.hide(player));
+    this.tiles.forEach(t => {
+      if (tiles.includes(t)) {
+        t.placeSprite('ui_tile_attack');
+        t.sendTags(player);
+      } else {
+        t.hide(player);
+      }
+    });
   }
 
   private onTileClick(ctx: SnowPenguinContext, object: GameObject) {
@@ -1023,16 +1032,16 @@ export class SnowPlayer {
   public async switchPlace(place: Place) {
     await this.setPlace(place.name);
     
-    await Promise.all([
+    const assets = [
       ...Array.from(place.assets).map(({ index }) => 
-        this.ctx.msg.send(this, 'S_LOADSPRITE', `0:${index}`)
+        ['S_LOADSPRITE', `0:${index}`]
       ),
       ...Array.from(place.soundAssets).map(({ index }) => 
-        this.ctx.msg.send(this, 'S_LOADSPRITE', `0:${index}`)
+        ['S_LOADSPRITE', `0:${index}`]
       )
-    ]);
+    ];
 
-    await this.ctx.msg.send(this, 'W_ASSETSCOMPLETE', this.pid);
+    await this.ctx.msg.sendMultiple(this, ...assets, ['W_ASSETSCOMPLETE', this.pid]);
   }
 
   public getWindow(name: string | null = null, url: string | null = null) {
@@ -1313,7 +1322,6 @@ export class SnowGame {
     // Can't really be helped because of anims, so just hide them again
     this.hideTargets();
 
-    await this.moveNinjas();
     await this.doNinjaActions();
     await this.doEnemyActions();
 
@@ -1386,8 +1394,8 @@ export class SnowGame {
       await this.displayRoundTitle();
       await sleep(1600);
 
-      await this.createEnemies();
-      await this.spawnEnemies();
+      this.createEnemies();
+      this.spawnEnemies();
       await this.waitForWindow(Windows.ROUNDS, false);
     }
 
@@ -1466,15 +1474,13 @@ export class SnowGame {
 
   protected async initObjects() {
     this.grid.initTiles();
-    await this.createEnvironment();
-    await this.createEnemies();
-    await this.createNinjas();
-
-    await this.showEnvironment();
-    await this.spawnNinjas();
+    this.createEnvironment();
+    this.createEnemies();
+    this.createNinjas();
+    //this.showEnvironment();
   }
 
-  protected async createEnvironment() {
+  protected createEnvironment() {
     // TODO: if we ever do a settings option for beta, this.map is always 1
     this.backgrounds = {
       1: [new GameObject(this, 'env_mountaintop_bg', 4.5, -1.1)],
@@ -1488,18 +1494,19 @@ export class SnowGame {
       ],
     }[this.map];
 
-    this.backgrounds.forEach(b => b.placeObject());
-
     const rockName = this.map === 3 ? 'crag_rock' : 'rock_mountaintop';
 
     this.rocks = [[2, 0], [6, 0], [2, 4], [6, 4]].map(([x, y]) => {
       return new GameObject(this, rockName, x, y, true, 0.5, 1);
     });
 
-    await Promise.all(this.rocks.map(r => r.placeObject()));
+    [...this.rocks, ...this.backgrounds].forEach(obj => {
+      obj.placeObjectAndSprite();
+      obj.sendTags();
+    });
   }
 
-  protected async createEnemies() {
+  protected createEnemies() {
     if (this.round > 3) return;
 
     // always 4 enemies for bonus round
@@ -1521,7 +1528,7 @@ export class SnowGame {
     }
   }
 
-  protected async createNinjas() {
+  protected createNinjas() {
     shuffle(this.ninjaSpawnPositions);
 
     const ninjaClasses = {
@@ -1536,32 +1543,29 @@ export class SnowGame {
       const pos = this.ninjaSpawnPositions[index];
       const ninja = new cls(this, player, pos.x, pos.y) as Ninja;
       ninja.placeObject();
+      ninja.idleAnimation();
+      ninja.sendTags();
+      ninja.placeHealthbar();
       player.ninja = ninja;
-    })
+    });
   }
 
-  private async showEnvironment() {
+  /*private async showEnvironment() {
     for (const { id, name } of [...this.backgrounds, ...this.rocks]) {
       const obj = this.objects.getById(id);
-      await obj.placeSprite(name);
+      obj.placeSprite(name);
+      obj.sendTags();
     }
-  }
+  }*/
 
-  protected async spawnNinjas() {
-    for (const ninja of this.ninjas) {
-      await ninja.placeObject();
-      await ninja.idleAnimation();
-      ninja.placeHealthbar();
-    }
-  }
-
-  protected async spawnEnemies() {
+  protected spawnEnemies() {
     for (const enemy of this.enemies) {
       const [x, y] = this.grid.enemySpawnLocation();
       this.grid.add(enemy, x, y);
       enemy.placeObject();
-      await enemy.spawnAnimation();
-      await enemy.idleAnimation();
+      enemy.spawnAnimation();
+      enemy.idleAnimation();
+      enemy.sendTags();
       enemy.placeHealthbar();
     }
   }
@@ -1614,10 +1618,14 @@ export class SnowGame {
 
     await this.callbacks.waitForAnims();
 
-    this.ninjas.forEach(n => n.resetSpriteSettings());
+    this.ninjas.forEach(n => {
+      n.resetSpriteSettings()
+      n.sendTags();
+    });
   }
 
   private async doNinjaActions() {
+    await this.moveNinjas();
     await this.doNinjaAttacks();
     await this.doPowerCardAttacks();
     await this.doNinjaRevive();
@@ -1760,7 +1768,7 @@ export class SnowGame {
     this.ninjas.forEach(n => n.hideGhost(false));
   }
 
-  protected async removeObjects() {
+  protected removeObjects() {
     this.removeTargets();
     this.removeUI();
 
@@ -2010,21 +2018,15 @@ export class TuskGame extends SnowGame {
     await this.callbacks.waitForAnims();
   }
 
-  protected async spawnNinjas() {
-    await super.spawnNinjas();
-    await this.sensei.placeObject();
-    await this.sensei.idleAnimation();
-  }
-
   protected async spawnEnemies() {
     await this.tusk.idleAnimation();
     this.tusk.placeHealthbar();
   }
 
-  protected async removeObjects() {
-    await super.removeObjects();
-    await this.sensei.removeObject();
-    await this.tusk.removeObject();
+  protected removeObjects() {
+    super.removeObjects();
+    this.sensei.removeObject();
+    this.tusk.removeObject();
   }
 
   protected async createEnvironment() {
@@ -2033,7 +2035,10 @@ export class TuskGame extends SnowGame {
       new GameObject(this, 'tusk_background_over', 4.5, 6.125),
     ];
 
-    this.backgrounds.forEach(b => b.placeObject());
+    this.backgrounds.forEach(b => {
+      b.placeObject();
+      b.sendTags();
+    });
   }
 
   protected async createNinjas() {
@@ -2041,6 +2046,8 @@ export class TuskGame extends SnowGame {
 
     this.sensei = new Sensei(this, 0, 2);
     this.sensei.placeObject();
+    this.sensei.idleAnimation();
+    this.sensei.sendTags();
   }
 
   protected async createEnemies() {
@@ -2174,7 +2181,7 @@ export class SnowWorld {
   soundAssets: AssetCollection = new AssetCollection();
   assets: AssetCollection = new AssetCollection();
 
-  matchMaker = new MatchMaker<SnowPlayer>(3);
+  matchMaker = new MatchMaker<SnowPlayer>(1);
 
   games: Set<SnowGame> = new Set();
 

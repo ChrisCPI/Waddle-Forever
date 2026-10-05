@@ -1,10 +1,9 @@
 import { getYellowString, logdebug, logverbose } from "@server/logger";
-import { WorldPenguin } from "@server/socket-server/world/world-penguin";
 import { SnowPenguinContext } from "@server/socket-server/snow-data-handler";
 import { AlignMode, EventType, InputModifier, InputTarget, InputType, MapblockType, ScaleMode, ServerType, TipPhase, Windows } from "../world/snow/snow-constants";
 import { CARDS } from "@server/game-logic/cards";
 import { SnowPlayer, SnowWorld } from "../world/snow/snow";
-import { GameObject, sfxName } from "../world/snow/snow-game-objects";
+import { sfxName } from "../world/snow/snow-game-objects";
 
 
 export type SnowHandler = (ctx: SnowPenguinContext, ...args: Array<string>) => Promise<void>;
@@ -451,11 +450,7 @@ export const frameworkCardConsumed: SnowFrameworkHandler = async ({ player }) =>
 export const frameworkConfirmClicked: SnowFrameworkHandler = async ({ player, game }) => {
   if (player.isReady) return;
 
-  // snowflake had this named 'ui_confirm', but that doesnt seem to exist?
-  const confirm = new GameObject(game, 'confirm', player.ninja.x, player.ninja.y, false, 0.5, 1.05);
-  await confirm.placeObject();
-  await confirm.placeSprite();
-  confirm.playSound('SFX_MG_2013_CJSnow_UIPlayerReady_VBR8');
+  player.ninja.placeConfirm();
 
   player.getWindow(Windows.UI).sendPayload('disableCards');
 

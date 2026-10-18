@@ -102,6 +102,13 @@ export const UPDATES_2014: Update[] = [
   },
   {
     date: '2014-02-06',
+    // Russian support released on this day,
+    // presumably several files changed around this time
+    fileChanges: {
+      'play/v2/games/card/card.swf': 'slegacy:media/play/v2/games/card/card.swf',
+      'play/v2/games/fire/fire.swf':  'slegacy:media/play/v2/games/fire/fire.swf',
+      'play/v2/games/senseiFire/SenseiWidget.swf': 'slegacy:media/play/v2/games/senseiFire/SenseiWidget.swf',
+    },
     clothingCatalog: {
       newItems: [
         368,

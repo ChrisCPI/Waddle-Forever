@@ -2912,7 +2912,7 @@ export const UPDATES_2009: Update[] = [
       'play/v2/content/global/content/ninjaprogress.swf': 'archives:NinjaProgressNov2009.swf',
       // the font changes on this day, and also
       // adds newer power card effects
-      'play/v2/games/card/card.swf': 'slegacy:media/play/v2/games/card/card.swf'
+      'play/v2/games/card/card.swf': 'fix:Card-May2010.swf'
     },
     cardSets: [4]
   },

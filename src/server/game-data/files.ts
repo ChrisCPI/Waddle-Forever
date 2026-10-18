@@ -254,6 +254,22 @@ would need to investigated`
     {
       file: 'Card-July2009.swf',
       comment: 'Removed domain check, and added the full list of power anims in com.clubpenguin.games.card.BattleController'
+    },
+    {
+      file: 'Card-May2010.swf',
+      comment: 'Removed domain check, and added the full list of power anims in com.clubpenguin.games.card.BattleController'
+    },
+    {
+      file: 'Card-Jitsu.swf',
+      comment: 'Removed domain check'
+    },
+    {
+      file: 'CardJitsuFireGame.swf',
+      comment: 'Removed domain check, removed check for showing CJ Party popup'
+    },
+    {
+      file: 'GamesSenseiFireSenseiWidget-May2010.swf',
+      comment: 'Removed domain check, and added .push("1") to the array it gives to SHELL.startWaddle(), which makes it work with modern shell'
     }
   ],
   [APPROXIMATION]: [

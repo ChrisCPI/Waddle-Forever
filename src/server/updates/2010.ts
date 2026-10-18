@@ -4185,7 +4185,8 @@ export const UPDATES_2010: Update[] = [
     },
     fileChanges: {
       'play/v2/content/global/content/ninjaprogress.swf': 'archives:NinjaProgressNov2010.swf',
-      // Font for the menus changes on this day
+      // Fonts change on this day
+      'play/v2/games/card/card.swf': 'fix:Card-Jitsu.swf',
       'play/v2/games/sensei/SenseiWidget.swf': 'slegacy:media/play/v2/games/sensei/SenseiWidget.swf'
     },
     rooms: {
